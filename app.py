@@ -69,4 +69,4 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     submit_btn.click(fn=generate_story, inputs=[api_input, outline_input], outputs=output_text)
 
 # LAUNCH WITH LOCKSCREEN ENABLED
-demo.launch(auth=verify_license_key, auth_message="Enter your custom Discord username and License"
+demo.launch(auth=verify_license_key, auth_message="Enter your custom Discord username and License Password.")
