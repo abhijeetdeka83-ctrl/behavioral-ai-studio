@@ -1,8 +1,10 @@
 # Behavioral AI Studio: Programmatic Prose Engine 🎭
 
-https://huggingface.co/spaces/Narrative-engine-labs/Narrative-engine-labs-12-22-66
-Link to my live hugging face page 
 
+🔒 **Deployment Status:** Private Production Instance (Access Restricted)
+
+> **Repository Purpose:** The live Hugging Face application interface is password-protected to secure backend API tokens and manage infrastructure constraints. This repository serves as a public source-code showcase for architectural and engineering review.
+> 
 A high-performance text optimization interface built on top of the Google Gemini API. This studio implements a deterministic 20-rule constraint layer designed programmatically to eliminate standard conversational LLM hallmarks, delivering high-density literary prose optimized for long-form serialization, complex world-building, and high-intensity marathon writing constraints.
 
 ## 🚀 Key Engineering Features
