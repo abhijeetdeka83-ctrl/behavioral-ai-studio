@@ -14,15 +14,19 @@ from guard_limiter import check_upload_limit, RateLimitExceededError
 from guard_validator import validate_file_spec
 from guard_quarantine import inspect_binary_header
 
+# 🧠 INTERNAL BRAIN WORKSPACE: Local Zero-DB Context Indexer
+from rag_processor import LoreMapRAG
+
 # ☁️ Hugging Face API Integration for Cloud Vault Routing
 from huggingface_hub import HfApi
 
 api = HfApi()
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-# Initialize the storage handshake and local database logs
+# Initialize the storage handshake, local database logs, and RAG Engine
 engine.download_history_from_hub()
 engine.init_db()
+rag_engine = LoreMapRAG()
 
 # 🌍 Your 5 Organized Stratagem Cloud Vaults
 VAULTS = {
@@ -67,11 +71,12 @@ def get_vault_dataframe(request: gr.Request):
     return pd.DataFrame(data)
 
 
-# 🛡️ SECURE ASSET UPLOAD PIPELINE (WITH 5-WAY CLOUD ROUTING)
+# 🛡️ SECURE ASSET UPLOAD PIPELINE (WITH 5-WAY CLOUD ROUTING & RAG INDEXING)
 def process_secure_upload(uploaded_file, request: gr.Request):
     """
     Chains all 3 local safety guards, then dynamically routes and mirrors 
-    the verified asset out to its designated private Hugging Face cloud vault.
+    the verified asset out to its designated private Hugging Face cloud vault 
+    while indexing the context locally into the LoreMapRAG matrix.
     """
     if uploaded_file is None:
         return "No temporary file allocation detected."
@@ -115,10 +120,13 @@ def process_secure_upload(uploaded_file, request: gr.Request):
         # Clone into local sandbox for engine accessibility
         shutil.copy(temp_file_path, final_destination)
         
+        # ---- 🧠 LAYER 5: IN-MEMORY SLIDING WINDOW RAG CHUNKING ----
+        rag_engine.load_and_chunk_file(final_destination)
+        
         if hasattr(engine, 'register_attachment_in_db'):
             engine.register_attachment_in_db(user_token, final_destination)
             
-        return f"✨ Asset verified & deployed to pool: {target_repo.split('/')[-1]}/{base_name}"
+        return f"✨ Asset verified, indexed to RAG, & deployed to pool: {target_repo.split('/')[-1]}/{base_name}"
         
     except RateLimitExceededError as e:
         raise gr.Error(str(e))
@@ -132,11 +140,11 @@ def process_secure_upload(uploaded_file, request: gr.Request):
         raise gr.Error(f"System Exception: Cloud cluster upload failed.")
 
 
-# ⏱️ ASYNC PROGRESS TRACKER WRAPPER
+# ⏱️ ASYNC PROGRESS TRACKER WRAPPER WITH INJECTED CONTEXT SCANNER
 async def async_compilation_handler(api_token, outline, request: gr.Request, progress=gr.Progress()):
     """
     Intercepts the UI event thread to safely step through progress notifications,
-    preventing application freezes while Gemini 3.5 Flash processes the request.
+    extracts target lore segments via RAG tracking vectors, and executes compilation.
     """
     if not api_token:
         return "⚠️ UI Safeguard Check: Please provide your Gemini Developer Token before executing.", "No telemetry logged."
@@ -147,16 +155,24 @@ async def async_compilation_handler(api_token, outline, request: gr.Request, pro
     await asyncio.sleep(0.3)
     
     progress(0.25, desc="🤖 Handshaking with Gemini 3.5 Flash engine...")
-    await asyncio.sleep(0.3)
     
+    # ---- 🧠 CONTEXT RECOVERY PIPELINE ----
+    # Extract only the 3 most relevant context segments matching the active prompt outline
+    injected_context = rag_engine.retrieve_context(outline, top_k=3)
+    
+    compilation_prompt = outline
+    if injected_context:
+        compilation_prompt = f"{injected_context}\n\n⚡ [SYSTEM COMPILATION BLUEPRINT]\n{outline}"
+    
+    await asyncio.sleep(0.3)
     progress(0.60, desc="📜 Compiling layout constraints & writing scene...")
     
     try:
         # Checks if engine logic is written as async or standard sync to prevent crashes
         if asyncio.iscoroutinefunction(engine.generate_story):
-            result = await engine.generate_story(api_token, outline, request)
+            result = await engine.generate_story(api_token, compilation_prompt, request)
         else:
-            result = await asyncio.to_thread(engine.generate_story, api_token, outline, request)
+            result = await asyncio.to_thread(engine.generate_story, api_token, compilation_prompt, request)
             
         progress(1.0, desc="✨ Scene compiled successfully!")
         return result  # 🌟 Dynamically passes the tuple: (manuscript_text, stats_summary)
