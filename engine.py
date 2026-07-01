@@ -10,13 +10,67 @@ import gradio as gr
 from google import genai
 from google.genai import types
 from huggingface_hub import HfApi, hf_hub_download
-import telemetry  # 🌟 Layer 4 Integration
+import telemetry  
 
 DB_FILE = "narrative_history.db"
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_DATASET_ID = os.environ.get("HF_DATASET_ID")
 SECRET_SALT = os.environ.get("SECRET_BOUNDARIES_SALT", "super_secret_fallback_phrase_99")
 SECRET_BOUNDARIES = os.environ.get("STRUCTURAL_BOUNDARIES", "Error: Prompt constraints missing.")
+SECRET_BYPASS_TOKEN = os.environ.get("URL_BYPASS_TOKEN", "alpha_access_2026")
+
+MODEL_BUNDLES = {
+    "1. Budget Echo Loop (Flash Lite Matrix)": {
+        "draft": "gemini-3.1-flash-lite",
+        "refine": "gemini-3.1-flash-lite",
+        "tier": "🟢 Ultra-Low Quota Spend"
+    },
+    "2. Frontier Agent Baseline (Native 3.5 Speed)": {
+        "draft": "gemini-3.5-flash",
+        "refine": "gemini-3.5-flash",
+        "tier": "🟢 Low Quota Spend"
+    },
+    "3. Stylist's Vault (Pro Draft + Flash Check)": {
+        "draft": "gemini-3.1-pro-preview",
+        "refine": "gemini-3.5-flash",
+        "tier": "🟡 Medium Quota Spend"
+    },
+    "4. Heavy Editorial Audit (Flash Draft + Pro Check)": {
+        "draft": "gemini-3.5-flash",
+        "refine": "gemini-3.1-pro-preview",
+        "tier": "🟠 High Quota Spend"
+    },
+    "5. The Literary Masterpiece (Pure Pro Execution)": {
+        "draft": "gemini-3.1-pro-preview",
+        "refine": "gemini-3.1-pro-preview",
+        "tier": "🔴 Maximum Quota Spend"
+    },
+    "6. Logic Sentinel (Quick Draft + Deep Analytics)": {
+        "draft": "gemini-2.5-flash",
+        "refine": "gemini-3.1-pro-preview",
+        "tier": "🟡 Medium Quota Spend"
+    },
+    "7. Dialogue Smooth-Talker (Agentic Flow Layout)": {
+        "draft": "gemini-3.5-flash",
+        "refine": "gemini-3.1-flash-lite",
+        "tier": "🟢 Low-Medium Quota Spend"
+    },
+    "8. Legacy Stable Anchor (Classic 2.5 Engine)": {
+        "draft": "gemini-2.5-pro",
+        "refine": "gemini-2.5-pro",
+        "tier": "🔴 High Quota Spend"
+    },
+    "9. The Layered Build (Gradual Revision Stack)": {
+        "draft": "gemini-3.1-flash-lite",
+        "refine": "gemini-3.5-flash",
+        "tier": "🟡 Medium Quota Spend"
+    },
+    "10. Experimental Loop (2026 Sandbox Hybrid)": {
+        "draft": "gemini-3.5-flash",
+        "refine": "gemini-3.1-pro-preview",
+        "tier": "🟠 High Quota Spend"
+    }
+}
 
 def download_history_from_hub():
     if not HF_TOKEN or not HF_DATASET_ID:
@@ -42,7 +96,6 @@ def upload_history_to_hub():
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Historic repository archive logs
     c.execute('''
         CREATE TABLE IF NOT EXISTS narrative_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,14 +105,12 @@ def init_db():
             manuscript TEXT
         )
     ''')
-    # Safe migration: Ensure older database instances get the telemetry column automatically
     try:
         c.execute("ALTER TABLE narrative_logs ADD COLUMN telemetry_json TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass
 
-    # LAYER 2 STATE MATRIX: Tracks continuous environmental memory per workspace user
     c.execute('''
         CREATE TABLE IF NOT EXISTS vault_state_registry (
             username TEXT PRIMARY KEY,
@@ -69,6 +120,17 @@ def init_db():
     conn.commit()
     conn.close()
 
+def check_url_bypass(request: gr.Request):
+    """Inspects query parameters to check for secure URL-based login bypasses."""
+    if not request:
+        return False, "anonymous"
+    params = dict(request.query_params)
+    if params.get("access") == SECRET_BYPASS_TOKEN:
+        assigned_user = params.get("user", "alpha_reviewer")
+        print(f"🔓 Security Matrix: Privileged magic URL bypass verified for user session: {assigned_user}")
+        return True, assigned_user
+    return False, "anonymous"
+
 def compile_active_state_manifest(username: str) -> str:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -77,27 +139,26 @@ def compile_active_state_manifest(username: str) -> str:
     conn.close()
     
     if not row:
-        default_state = {
+        state = {
             "environment_degradation": ["No severe structural anomalies logged"],
-            "character_knowledge_flags": {
-                "Garrick": ["Aware of baseline mechanical operational limits"],
-                "Toby": ["Aware of immediate surface-level neighborhood occurrences"]
-            }
+            "character_knowledge_flags": {}
         }
-        return f"""
-        <LAYER_2_ACTIVE_STATE>
-        Environmental Degradation Tracking: {', '.join(default_state['environment_degradation'])}
-        Garrick Knowledge Base: {', '.join(default_state['character_knowledge_flags']['Garrick'])}
-        Toby Knowledge Base: {', '.join(default_state['character_knowledge_flags']['Toby'])}
-        </LAYER_2_ACTIVE_STATE>
-        """
+    else:
+        state = json.loads(row[0])
         
-    state = json.loads(row[0])
+    char_flags = state.get('character_knowledge_flags', {})
+    char_lines = []
+    
+    if not char_flags:
+        char_lines.append("No explicit character knowledge baselines tracked yet.")
+    else:
+        for char_name, flags in char_flags.items():
+            char_lines.append(f"{char_name} Knowledge Base: {', '.join(flags)}")
+            
     return f"""
     <LAYER_2_ACTIVE_STATE>
     Environmental Degradation Tracking: {', '.join(state.get('environment_degradation', ['No anomalies logged']))}
-    Garrick Knowledge Base: {', '.join(state.get('character_knowledge_flags', {}).get('Garrick', ['Baseline logic']))}
-    Toby Knowledge Base: {', '.join(state.get('character_knowledge_flags', {}).get('Toby', ['Baseline logic']))}
+    {"\n    ".join(char_lines)}
     </LAYER_2_ACTIVE_STATE>
     """
 
@@ -109,7 +170,7 @@ def update_vault_state_from_prose(username: str, script_text: str):
     
     state = json.loads(row[0]) if row else {
         "environment_degradation": [],
-        "character_knowledge_flags": {"Garrick": [], "Toby": []}
+        "character_knowledge_flags": {}
     }
     
     if re.search(r"\b(broke|shattered|tore|spilled|leaked|sheared|failed|cracked|ruined|smashed)\b", script_text, re.IGNORECASE):
@@ -123,25 +184,35 @@ def update_vault_state_from_prose(username: str, script_text: str):
     conn.close()
 
 def programmatic_violation_check(text):
-    forbidden_patterns = [
+    forbidden_patterns_case_insensitive = [
         r"\brealized\b", r"\bunderstood\b", r"\bfelt\b", 
         r"\bcouldn't help but feel\b", r"\bfor the first time\b", 
         r"\bthe moment stayed\b", r"\bit bothered\b", r"\bshe knew\b", r"\bhe knew\b",
-        r",\s*(Garrick|Toby)[\.!]",
         r"\bwith the weight of\b", r"\bas if to say\b", r"\bseemed to symbolize\b"
     ]
     violations = []
-    for pattern in forbidden_patterns:
+    
+    # Process general lexical style violations
+    for pattern in forbidden_patterns_case_insensitive:
         matches = re.findall(pattern, text, re.IGNORECASE)
         if matches:
             violations.append(f"'{matches[0]}'")
+            
+    # Cast-agnostic syntax validation (catches improper punctuation breaks after any capitalized character name)
+    name_pattern = r",\s*([A-Z][a-zA-Z]+)[\.!]"
+    name_matches = re.findall(name_pattern, text)
+    for name in name_matches:
+        violations.append(f"', {name}'")
+        
     return violations
 
-async def generate_story(buyer_api_key, plot_outline, request: gr.Request):
+async def generate_story(buyer_api_key, plot_outline, selected_bundle, session_username="anonymous"):
     if not buyer_api_key.strip() or not plot_outline.strip():
-        return "🚨 System Status: Execution halted. Required fields are empty.", "No telemetry logged."
+        return "🚨 System Status: Execution halted. Required fields are empty.", {}
     
-    username = request.username if request else "anonymous"
+    bundle_config = MODEL_BUNDLES.get(selected_bundle, MODEL_BUNDLES["2. Frontier Agent Baseline (Native 3.5 Speed)"])
+    draft_model_target = bundle_config["draft"]
+    refine_model_target = bundle_config["refine"]
         
     try:
         client = genai.Client(api_key=buyer_api_key)
@@ -157,22 +228,18 @@ async def generate_story(buyer_api_key, plot_outline, request: gr.Request):
                             continue
                     raise e
 
-        live_state_manifest = compile_active_state_manifest(username)
+        live_state_manifest = compile_active_state_manifest(session_username)
         runtime_system_instruction = f"{SECRET_BOUNDARIES}\n\n{live_state_manifest}"
 
-        # --- PASS 1: THE INITIAL DRAFT ---
         response = await execute_with_retry_async(
-            model="gemini-3.5-flash",
+            model=draft_model_target,
             contents=f"Execute the next structural scene based on this user blueprint: {plot_outline}",
             config=types.GenerateContentConfig(system_instruction=runtime_system_instruction, temperature=0.75)
         )
         raw_draft = response.text
         current_prose = raw_draft
-        
-        # 🌟 Capture initial baseline violations before editing wipes them clean
         initial_violations = programmatic_violation_check(raw_draft)
         
-        # --- PASS 2+: CRITIQUE REFINEMENT PIPELINE ---
         max_edits = 3
         for loop_count in range(1, max_edits + 1):
             hard_violations = programmatic_violation_check(current_prose)
@@ -182,26 +249,20 @@ async def generate_story(buyer_api_key, plot_outline, request: gr.Request):
             audit_prompt = f"""
             You are an advanced software-driven copyediting compiler. 
             Rewrite the following story text to completely remove these forbidden phrasing violations: {', '.join(hard_violations)}.
-            
-            [IMMUTABLE CRITERIA HIERARCHY & DYNAMIC WORLD STATES]
             {runtime_system_instruction}
-            
-            [TARGET MANUSCRIPT TEXT TO DE-AI]
             {current_prose}
-            
-            Return ONLY the fully revised, complete story text. Do not include notes or commentary.
+            Return ONLY the fully revised, complete story text.
             """
             
             correction_pass = await execute_with_retry_async(
-                model="gemini-2.5-flash",
+                model=refine_model_target,
                 contents=audit_prompt,
                 config=types.GenerateContentConfig(temperature=0.3)
             )
             current_prose = correction_pass.text
         
-        update_vault_state_from_prose(username, current_prose)
+        update_vault_state_from_prose(session_username, current_prose)
         
-        # 🌟 LAYER 4 PROCESSING: Compile comparative performance metrics
         stats = telemetry.calculate_prose_telemetry(
             draft_text=raw_draft,
             final_text=current_prose,
@@ -209,42 +270,35 @@ async def generate_story(buyer_api_key, plot_outline, request: gr.Request):
             checking_function=programmatic_violation_check
         )
         
-        # --- COMMIT LOG INTO USER TIMELINE ---
+        stats["tier"] = bundle_config["tier"]
+        
         timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute("""
             INSERT INTO narrative_logs (username, timestamp, blueprint, manuscript, telemetry_json) 
             VALUES (?, ?, ?, ?, ?)""", 
-            (username, timestamp_str, plot_outline, current_prose, json.dumps(stats))
+            (session_username, timestamp_str, plot_outline, current_prose, json.dumps(stats))
         )
         conn.commit()
         conn.close()
         
         upload_history_to_hub()
-        
-        # Build scannable telemetry text block output for the UI panel
-        stats_summary = (
-            f"📈 Suppression Efficiency: {stats['suppression_efficiency_pct']}%\n"
-            f"🎭 Dialogue Diversity Score: {stats['dialogue_diversity_pct']}%\n"
-            f"🔄 Lexical Echo Phrases Caught: {stats['lexical_echo_phrases']}\n"
-            f"⏳ Pacing Dynamic Range (Sentence StdDev): {stats['pacing_dynamic_range']} words\n"
-            f"🔀 Word Count Delta: {stats['word_count_delta']} words"
-        )
-        return current_prose, stats_summary
+        return current_prose, stats
         
     except Exception as e:
+        error_stats = {"tier": "Error State", "suppression_efficiency_pct": 0, "dialogue_diversity_pct": 0, "lexical_echo_phrases": 0, "pacing_dynamic_range": 0}
         if "503" in str(e):
-            return "⏳ Server bottlenecked. Safeguards held. Please wait 10 seconds and compile again!", "N/A"
-        return f"❌ System Error: {str(e)}", "Error compiling telemetry."
+            return "⏳ Server bottlenecked. Safeguards held. Please wait 10 seconds and compile again!", error_stats
+        return f"❌ System Error: {str(e)}", error_stats
 
-def fetch_user_history_choices(request: gr.Request):
-    if not request or not request.username:
+def fetch_user_history_choices(username):
+    if not username or username == "anonymous":
         return gr.update(choices=[])
     
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT id, timestamp, blueprint FROM narrative_logs WHERE username = ? ORDER BY id DESC", (request.username,))
+    c.execute("SELECT id, timestamp, blueprint FROM narrative_logs WHERE username = ? ORDER BY id DESC", (username,))
     rows = c.fetchall()
     conn.close()
     
@@ -255,7 +309,7 @@ def fetch_user_history_choices(request: gr.Request):
 
 def restore_archived_session(log_id):
     if not log_id:
-        return gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), "", {}
         
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -265,20 +319,14 @@ def restore_archived_session(log_id):
     
     if row:
         blueprint, manuscript, telemetry_raw = row[0], row[1], row[2]
-        if telemetry_raw:
-            stats = json.loads(telemetry_raw)
-            stats_summary = (
-                f"📈 Suppression Efficiency: {stats.get('suppression_efficiency_pct', 100)}%\n"
-                f"🎭 Dialogue Diversity Score: {stats.get('dialogue_diversity_pct', 100)}%\n"
-                f"🔄 Lexical Echo Phrases Caught: {stats.get('lexical_echo_phrases', 0)}\n"
-                f"⏳ Pacing Dynamic Range (Sentence StdDev): {stats.get('pacing_dynamic_range', 0)} words\n"
-                f"🔀 Word Count Delta: {stats.get('word_count_delta', 0)} words"
-            )
-        else:
-            stats_summary = "Historical entry: Telemetry registry log not present for this entry."
-            
-        return blueprint, manuscript, stats_summary
-    return gr.update(), gr.update(), gr.update()
+        stats = json.loads(telemetry_raw) if telemetry_raw else {}
+        
+        stats_summary = (
+            f"📈 Suppression Efficiency: {stats.get('suppression_efficiency_pct', 100)}%\n"
+            f"🎭 Dialogue Diversity Score: {stats.get('dialogue_diversity_pct', 100)}%\n"
+        )
+        return blueprint, manuscript, stats_summary, stats
+    return gr.update(), gr.update(), "", {}
 
 def verify_license_key(username, password):
     username_clean = username.lower().strip()
