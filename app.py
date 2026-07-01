@@ -1,34 +1,36 @@
+# app.py
 import os
 import shutil
 import sqlite3
 import asyncio  # ⏱️ Non-blocking async UI engine
+import requests # 🌐 Network pinger for live token checking
 import gradio as gr
 import pandas as pd
+import json
 
 # 🔌 Import the backend logic
 import engine
-import localization  # 🌐 Linked Macro-National Localization Module
+import localization  
 
-# 🛡️ INTEGRATED SECURITY GUARDS: The 3-Layer Defense Matrix
+# 🛡️ INTEGRATED SECURITY GUARDS
 from guard_limiter import check_upload_limit, RateLimitExceededError
 from guard_validator import validate_file_spec
 from guard_quarantine import inspect_binary_header
 
-# 🧠 INTERNAL BRAIN WORKSPACE: Local Zero-DB Context Indexer
-from rag_processor import LoreMapRAG
+# 🧠 INTERNAL BRAIN WORKSPACE
+from rag_processor import SessionRAGManager
 
-# ☁️ Hugging Face API Integration for Cloud Vault Routing
+# ☁️ Hugging Face API Integration
 from huggingface_hub import HfApi
 
 api = HfApi()
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-# Initialize the storage handshake, local database logs, and RAG Engine
+# Initialize synchronization frames and frameworks
 engine.download_history_from_hub()
 engine.init_db()
-rag_engine = LoreMapRAG()
+rag_engine = SessionRAGManager()
 
-# 🌍 Your 5 Organized Stratagem Cloud Vaults
 VAULTS = {
     ".png": "Narrative-engine-labs/stratagem-vault",
     ".jpg": "Narrative-engine-labs/stratagem-vault-jpg",
@@ -40,7 +42,26 @@ VAULTS = {
     ".md": "Narrative-engine-labs/stratagem-vault-text"
 }
 
-# Helper to format SQLite database rows into a professional file-explorer dataframe
+# 🔍 REAL-TIME EVENT-DRIVEN TOKEN CHECKER
+def verify_gemini_token_status(api_token):
+    if not api_token or len(api_token.strip()) < 10:
+        return "txt", "⚪ **Status:** Missing token string. Staging window is currently idle."
+        
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_token}"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            return "🟢 **Status: Active & Ready** | Key signature validated. Quota headroom functional."
+        elif response.status_code == 429:
+            return "🟡 **Status: Exhausted / Rate-Limited** | Resource threshold pacing throttled (429)."
+        elif response.status_code in [400, 403]:
+            return "🔴 **Status: Invalid Key Configuration** | Authentication rejected by cluster."
+        else:
+            return f"orange", f"硬 **Status: Code {response.status_code}** | Context indicator check failure."
+    except requests.exceptions.RequestException:
+        return "❌ **Status: Network Timeout** | Local network failed to handshake with validation cluster."
+
 def get_vault_dataframe(request: gr.Request):
     if not request or not request.username:
         return pd.DataFrame(columns=["File Name", "Compiled Timestamp", "Blueprint Snippet", "Size"])
@@ -70,14 +91,7 @@ def get_vault_dataframe(request: gr.Request):
         
     return pd.DataFrame(data)
 
-
-# 🛡️ SECURE ASSET UPLOAD PIPELINE (WITH 5-WAY CLOUD ROUTING & RAG INDEXING)
 def process_secure_upload(uploaded_file, request: gr.Request):
-    """
-    Chains all 3 local safety guards, then dynamically routes and mirrors 
-    the verified asset out to its designated private Hugging Face cloud vault 
-    while indexing the context locally into the LoreMapRAG matrix.
-    """
     if uploaded_file is None:
         return "No temporary file allocation detected."
         
@@ -87,23 +101,15 @@ def process_secure_upload(uploaded_file, request: gr.Request):
     _, ext = os.path.splitext(base_name.lower())
     
     try:
-        # ---- GUARD 1: Rate Limiting ----
         check_upload_limit(user_token, max_uploads=5, window_seconds=60)
-        
-        # ---- GUARD 2: Size Constraints ----
         validate_file_spec(temp_file_path, max_mb=5.0)
-        
-        # ---- GUARD 3: Binary Quarantine Header Check ----
         inspect_binary_header(temp_file_path)
         
-        # ---- ☁️ LAYER 4: MULTI-DATASET CLOUD ROUTER ----
         target_repo = VAULTS.get(ext, "Narrative-engine-labs/stratagem-vault-text")
         
         if not HF_TOKEN:
-            print("❌ CONFIG ERROR: The 'HF_TOKEN' is missing from Space Secrets!")
             raise gr.Error("Backend Configuration Error: Cloud credentials missing.")
             
-        print(f"🚀 Mirroring verified asset '{base_name}' to cloud vault pool -> {target_repo}")
         api.upload_file(
             path_or_fileobj=temp_file_path,
             path_in_repo=f"uploads/{base_name}",
@@ -112,16 +118,12 @@ def process_secure_upload(uploaded_file, request: gr.Request):
             token=HF_TOKEN
         )
         
-        # ---- SECURE LOCAL PERSISTENCE STORAGE ----
         storage_dir = "./storage/user_assets"
         os.makedirs(storage_dir, exist_ok=True)
         final_destination = os.path.join(storage_dir, base_name)
-        
-        # Clone into local sandbox for engine accessibility
         shutil.copy(temp_file_path, final_destination)
         
-        # ---- 🧠 LAYER 5: IN-MEMORY SLIDING WINDOW RAG CHUNKING ----
-        rag_engine.load_and_chunk_file(final_destination)
+        _, rag_log = rag_engine.ingest_user_asset(user_token, final_destination)
         
         if hasattr(engine, 'register_attachment_in_db'):
             engine.register_attachment_in_db(user_token, final_destination)
@@ -139,51 +141,49 @@ def process_secure_upload(uploaded_file, request: gr.Request):
             os.remove(temp_file_path)
         raise gr.Error(f"System Exception: Cloud cluster upload failed.")
 
-
-# ⏱️ ASYNC PROGRESS TRACKER WRAPPER WITH INJECTED CONTEXT SCANNER
-async def async_compilation_handler(api_token, outline, request: gr.Request, progress=gr.Progress()):
-    """
-    Intercepts the UI event thread to safely step through progress notifications,
-    extracts target lore segments via RAG tracking vectors, and executes compilation.
-    """
+# ⏱️ ASYNC HANDLER INTERACTIVELY PACKS DASHBOARD KPIs
+async def async_compilation_handler(api_token, outline, bundle_name, request: gr.Progress, progress=gr.Progress()):
     if not api_token:
-        return "⚠️ UI Safeguard Check: Please provide your Gemini Developer Token before executing.", "No telemetry logged."
+        return "⚠️ UI Safeguard Check: Please provide your Gemini Developer Token before executing.", "Unknown", 0, 0, 0, 0, "No data profile logged."
     if not outline or len(outline.strip()) < 5:
-        return "⚠️ UI Safeguard Check: Structure blueprint field is empty or insufficient.", "No telemetry logged."
+        return "⚠️ UI Safeguard Check: Structure blueprint field is empty or insufficient.", "Unknown", 0, 0, 0, 0, "No data profile logged."
 
     progress(0, desc="⚡ Connecting to Stratagem compilation hub...")
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.2)
     
-    progress(0.25, desc="🤖 Handshaking with Gemini 3.5 Flash engine...")
-    
-    # ---- 🧠 CONTEXT RECOVERY PIPELINE ----
-    # Extract only the 3 most relevant context segments matching the active prompt outline
-    injected_context = rag_engine.retrieve_context(outline, top_k=3)
+    user_token = request.username if (request and request.username) else "anonymous_node"
+    injected_context, rag_telemetry = rag_engine.retrieve_user_context(user_token, outline, top_k=3)
     
     compilation_prompt = outline
     if injected_context:
         compilation_prompt = f"{injected_context}\n\n⚡ [SYSTEM COMPILATION BLUEPRINT]\n{outline}"
     
-    await asyncio.sleep(0.3)
-    progress(0.60, desc="📜 Compiling layout constraints & writing scene...")
+    progress(0.40, desc=f"🤖 Booting isolated workspace nodes via {bundle_name}...")
     
     try:
-        # Checks if engine logic is written as async or standard sync to prevent crashes
         if asyncio.iscoroutinefunction(engine.generate_story):
-            result = await engine.generate_story(api_token, compilation_prompt, request)
+            manuscript_text, structured_stats = await engine.generate_story(api_token, compilation_prompt, bundle_name, request)
         else:
-            result = await asyncio.to_thread(engine.generate_story, api_token, compilation_prompt, request)
+            manuscript_text, structured_stats = await asyncio.to_thread(engine.generate_story, api_token, compilation_prompt, bundle_name, request)
             
-        progress(1.0, desc="✨ Scene compiled successfully!")
-        return result  # 🌟 Dynamically passes the tuple: (manuscript_text, stats_summary)
+        progress(0.90, desc="📊 Mapping output telemetry metrics into layout interface view...")
+        
+        # Pull safe data frames out of structured dictionary output
+        tier = structured_stats.get("tier", "Standard Quota")
+        efficiency = float(structured_stats.get("suppression_efficiency_pct", 0))
+        diversity = float(structured_stats.get("dialogue_diversity_pct", 0))
+        echoes = int(structured_stats.get("lexical_echo_phrases", 0))
+        pacing = float(structured_stats.get("pacing_dynamic_range", 0))
+        
+        progress(1.0, desc="✨ Scene compiled successfully via bundle strategy!")
+        return manuscript_text, tier, efficiency, diversity, echoes, pacing, rag_telemetry
         
     except Exception as e:
         progress(1.0, desc="❌ Operational anomaly detected.")
-        return f"System Engine Exception: Handling thread failed. Details: {str(e)}", "Error compiling telemetry diagnostics."
-
+        return f"System Engine Exception: Handling thread failed. Details: {str(e)}", "Error", 0, 0, 0, 0, "Error compiling telemetry diagnostics."
 
 # ==========================================
-# 💎 PREMIUM DASHBOARD CSS STUDIO (OBSIDIAN THEME)
+# 💎 PREMIUM OBSIDIAN CSS THEME STUDIO
 # ==========================================
 CUSTOM_CSS = """
 body, .gradio-container {
@@ -272,6 +272,20 @@ textarea:focus, input:focus {
 .secondary-btn:hover {
     background: #334155 !important;
 }
+.status-badge {
+    background: #04060a !important;
+    border: 1px solid #1e293b !important;
+    padding: 10px 14px !important;
+    border-radius: 6px !important;
+    font-size: 0.88rem !important;
+    display: block;
+}
+.kpi-container {
+    background: #04060a !important;
+    border: 1px solid #1e293b !important;
+    border-radius: 8px !important;
+    padding: 12px !important;
+}
 """
 
 # ==========================================
@@ -279,12 +293,10 @@ textarea:focus, input:focus {
 # ==========================================
 with gr.Blocks(css=CUSTOM_CSS) as demo:
     
-    # 🌟 Header Block Container
     with gr.Group(elem_classes="header-container"):
         gr.Markdown("# 🤖 CORE STRATAGEM WORKSPACE", elem_classes="brand-title")
         gr.Markdown("Enterprise-grade agentic manuscript compiler featuring decentralized history sync mechanics and zero-DB security parameters.")
     
-    # 🗂️ Navigation Engine Tabs
     with gr.Tabs(elem_classes="tabs-navigation"):
         
         # TAB 1: INTERACTIVE COMPILER WORKSPACE
@@ -292,18 +304,27 @@ with gr.Blocks(css=CUSTOM_CSS) as demo:
             with gr.Row():
                 with gr.Column(scale=4, elem_classes="workspace-card"):
                     gr.Markdown("### 🛠️ Operation Inputs")
+                    
                     api_input = gr.Textbox(
                         label="🔑 Gemini Developer Token", 
-                        placeholder="Paste authorization token...", 
+                        placeholder="Paste authorization token configuration here...", 
                         type="password"
                     )
+                    
+                    key_status_box = gr.Markdown("臨 **Status:** Staging window is currently idle.", elem_classes="status-badge")
+                    
+                    bundle_dropdown = gr.Dropdown(
+                        choices=list(engine.MODEL_BUNDLES.keys()),
+                        value=list(engine.MODEL_BUNDLES.keys())[1], 
+                        label="📦 Select AI Engine Deployment Bundle"
+                    )
+                    
                     outline_input = gr.Textbox(
                         label="📝 Structure Blueprint / Prompts", 
                         placeholder="Map structural constraints, story beats, outline components...", 
                         lines=10
                     )
                     
-                    # 🛡️ INTEGRATED FILE ENTRY LAYOUT MODULES
                     file_uploader = gr.File(
                         label="📎 Attach Lore Map / Plot Binder (Max 5MB)",
                         file_types=[".png", ".jpg", ".jpeg", ".pdf", ".docx", ".doc", ".txt", ".md"],
@@ -315,7 +336,6 @@ with gr.Blocks(css=CUSTOM_CSS) as demo:
                         interactive=False
                     )
                     
-                    # 🌐 NEW GLOBAL LOCALIZATION COMPONENT ENGINE
                     language_dropdown = gr.Dropdown(
                         choices=list(localization.TARGET_LANGUAGES.keys()),
                         value="Japanese (日本語)",
@@ -334,13 +354,19 @@ with gr.Blocks(css=CUSTOM_CSS) as demo:
                         elem_classes="manuscript-canvas"
                     )
                     
-                    # 🌟 LAYER 4 TERMINAL ENGINE DIAGNOSTICS DISPLAY PANEL
-                    telemetry_output = gr.Textbox(
-                        label="🛰️ Layer 4 Narrative Telemetry Analytics", 
-                        placeholder="Awaiting compilation sequence to pull real-time structural data summaries...", 
-                        lines=6,
-                        interactive=False
-                    )
+                    # 🛰️ INTERACTIVE LIVE KPI METRICS PANEL
+                    gr.Markdown("### 🛰️ Layer 4 Narrative Telemetry Analytics Dashboard")
+                    with gr.Group(elem_classes="kpi-container"):
+                        with gr.Row():
+                            ui_tier_badge = gr.Textbox(label="🏷️ Active Quota Footprint Tier", value="N/A", interactive=False)
+                            ui_echo_badge = gr.Number(label="🔄 Lexical Echo Phrases Caught", value=0, interactive=False)
+                        with gr.Row():
+                            ui_efficiency_slider = gr.Slider(label="📈 Forbidden Phrase Suppression Efficiency", minimum=0, maximum=100, value=0, interactive=False)
+                            ui_diversity_slider = gr.Slider(label="🎭 Dialogue Diversity Score", minimum=0, maximum=100, value=0, interactive=False)
+                        with gr.Row():
+                            ui_pacing_badge = gr.Number(label="⏳ Pacing Dynamic Range (Sentence StdDev Words)", value=0, interactive=False)
+                        
+                        ui_rag_telemetry = gr.Textbox(label="🧠 Active Knowledge Retrieval Vector Logs", placeholder="No asset data pulled into current execution stack.", lines=3, interactive=False)
         
         # TAB 2: ADVANCED SECURE VAULT EXPLORER
         with gr.Tab("📁 Vault File Explorer"):
@@ -361,32 +387,33 @@ with gr.Blocks(css=CUSTOM_CSS) as demo:
                 )
 
     # ==========================================
-    # 🎛️ EVENT HANDLERS & LINKAGES
+    # 🎛️ AUTOMATED EVENT HANDLERS & LINKAGES
     # ==========================================
     
-    # ⏱️ Execution Pass Trigger linked to the updated Async Progress handler
+    # ⚡ AUTOMATION HOOKS: Auto-runs verification on paste (.change) or exit (.blur)
+    api_input.change(fn=verify_gemini_token_status, inputs=[api_input], outputs=[key_status_box])
+    api_input.blur(fn=verify_gemini_token_status, inputs=[api_input], outputs=[key_status_box])
+    
+    # Connect compile buttons to unpack results interactively across components
     submit_btn.click(
         fn=async_compilation_handler, 
-        inputs=[api_input, outline_input], 
-        outputs=[output_text, telemetry_output],  # 🌟 Direct mapping to both workspace terminals
+        inputs=[api_input, outline_input, bundle_dropdown], 
+        outputs=[output_text, ui_tier_badge, ui_efficiency_slider, ui_diversity_slider, ui_echo_badge, ui_pacing_badge, ui_rag_telemetry],  
         show_progress="full"
     )
     
-    # 🌐 Link the New Translation Pipeline Trigger
     translate_btn.click(
         fn=localization.translate_manuscript,
         inputs=[output_text, language_dropdown, api_input],
         outputs=[output_text]
     )
     
-    # 🛡️ RUN SECURITY & ROUTER MATRIX UPON UPLOAD
     file_uploader.upload(
         fn=process_secure_upload,
         inputs=[file_uploader],
         outputs=upload_status
     )
     
-    # Vault Repository Scanning Engine
     def trigger_vault_refresh(request: gr.Request):
         dropdown_update = engine.fetch_user_history_choices(request)
         dataframe_update = get_vault_dataframe(request)
@@ -394,16 +421,26 @@ with gr.Blocks(css=CUSTOM_CSS) as demo:
         
     refresh_vault_btn.click(fn=trigger_vault_refresh, inputs=[], outputs=[history_dropdown, vault_grid])
     
-    # Mounting a file context to the UI workspace fields
+    # 📂 INTERACTIVE WORKSPACE INGESTION PIPELINE FOR HISTORY SELECTOR
     def load_historical_file_to_studio(log_id):
-        # 🌟 Unpacks all three outputs now stored in the database registry
-        blueprint, manuscript, stats_summary = engine.restore_archived_session(log_id)
-        return blueprint, manuscript, stats_summary
+        blueprint, manuscript, stats_summary, structured_data = engine.restore_archived_session(log_id)
+        
+        # Pull values out to mount to dashboard dynamically
+        return (
+            blueprint, 
+            manuscript, 
+            structured_data.get("tier", "Historical Workspace Archive"),
+            float(structured_data.get("suppression_efficiency_pct", 0)),
+            float(structured_data.get("dialogue_diversity_pct", 0)),
+            int(structured_data.get("lexical_echo_phrases", 0)),
+            float(structured_data.get("pacing_dynamic_range", 0)),
+            "Loaded historical log sequence. System operational context successfully mounted."
+        )
         
     history_dropdown.change(
         fn=load_historical_file_to_studio, 
         inputs=[history_dropdown], 
-        outputs=[outline_input, output_text, telemetry_output]  # 🌟 Updates the diagnostics log on historical clicks
+        outputs=[outline_input, output_text, ui_tier_badge, ui_efficiency_slider, ui_diversity_slider, ui_echo_badge, ui_pacing_badge, ui_rag_telemetry]  
     )
 
 if __name__ == "__main__":
@@ -412,5 +449,4 @@ if __name__ == "__main__":
         auth=engine.verify_license_key, 
         auth_message="Welcome to Stratagem Workspace. Provide access token configurations.",
         css=CUSTOM_CSS
-    )
-    
+)
