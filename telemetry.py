@@ -1,58 +1,73 @@
 # telemetry.py
-# Layer 4 Narrative Telemetry Engine for Stratagem Workspace
 import re
 import math
-import collections
 
-def calculate_prose_telemetry(draft_text: str, final_text: str, initial_violations: list, checking_function) -> dict:
+def calculate_prose_telemetry(draft_text, final_text, initial_violations, checking_function):
     """
-    LAYER 4: TELEMETRY COMPILER
-    Compares the raw AI draft against the audited manuscript to generate hard quality metrics.
+    Parses draft and finalized manuscript text states to calculate 
+    real-time algorithmic telemetry for dashboard visualization.
     """
-    def get_words(text):
-        return re.findall(r'\b\w+\b', text.lower())
-
-    def get_sentences(text):
-        return [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
-
-    draft_words = get_words(draft_text)
-    final_words = get_words(final_text)
-    final_sentences = get_sentences(final_text)
-
-    # 1. Anti-Pattern Suppression Efficiency Rate
-    # Calls your engine's existing violation check function dynamically
+    # 1. Calculate Forbidden Phrase Suppression Efficiency
+    initial_count = len(initial_violations)
     final_violations = checking_function(final_text)
-    violations_removed = len(initial_violations) - len(final_violations)
-    suppression_rate = (violations_removed / len(initial_violations) * 100) if initial_violations else 100.0
-
-    # 2. Dialogue Diversity Score (Type-Token Ratio for Spoken Lines)
-    dialogue_lines = re.findall(r'"([^"]*)"', final_text)
-    dialogue_words = get_words(" ".join(dialogue_lines))
-    if dialogue_words:
-        dialogue_diversity = (len(set(dialogue_words)) / len(dialogue_words)) * 100
+    final_count = len(final_violations)
+    
+    if initial_count == 0:
+        suppression_efficiency = 100.0  # Perfect score if no rules were broken initially
     else:
-        dialogue_diversity = 100.0
+        # Percentage of caught errors successfully cleaned up by the loop
+        suppression_efficiency = max(0.0, min(100.0, ((initial_count - final_count) / initial_count) * 100.0))
 
-    # 3. Repeated Phrase Frequency (Lexical Echo Tracker)
-    bigrams = [(final_words[i], final_words[i+1]) for i in range(len(final_words)-1)]
-    bigram_counts = collections.Counter(bigrams)
-    duplicate_echoes = sum(1 for count in bigram_counts.values() if count > 2)
+    # 2. Calculate Dialogue Diversity Score (Type-Token Ratio inside quotes)
+    dialogue_blocks = re.findall(r'"([^"]*)"', final_text)
+    if not dialogue_blocks:
+        # Fallback to general prose analysis if the scene has zero spoken lines
+        dialogue_blocks = [final_text]
+        
+    dialogue_words = []
+    for block in dialogue_blocks:
+        words = re.findall(r'\b\w+\b', block.lower())
+        dialogue_words.extend(words)
+        
+    if not dialogue_words:
+        dialogue_diversity = 0.0
+    else:
+        unique_words = set(dialogue_words)
+        # Classic TTR metric scaled up to a baseline target percentage
+        raw_ttr = len(unique_words) / len(dialogue_words)
+        dialogue_diversity = max(0.0, min(100.0, raw_ttr * 130.0)) # Scaled for natural language margins
 
-    # 4. Pacing Dynamic Range (Sentence Length Standard Deviation)
-    sentence_lengths = [len(get_words(s)) for s in final_sentences]
-    if len(sentence_lengths) > 1:
+    # 3. Catch Lexical Echo Phrases (Repetitive word pairs or close loops)
+    # This flags when a writer uses the same word within a 3-word proximity window
+    all_words = re.findall(r'\b\w{4,}\b', final_text.lower()) # Only check words 4+ letters long
+    echo_count = 0
+    for i in range(len(all_words) - 3):
+        window = all_words[i+1 : i+4]
+        if all_words[i] in window:
+            echo_count += 1
+
+    # 4. Calculate Pacing Dynamic Range (Standard Deviation of Sentence Word Lengths)
+    # Great prose varies sentence lengths dramatically. Monotonous prose keeps them identical.
+    sentences = re.split(r'[.!?]+', final_text)
+    sentence_lengths = []
+    
+    for sentence in sentences:
+        words = re.findall(r'\b\w+\b', sentence)
+        if len(words) > 1: # Ignore empty fragments or stray punctuation artifacts
+            sentence_lengths.append(len(words))
+            
+    if len(sentence_lengths) < 2:
+        pacing_range = 0.0
+    else:
+        # Calculate standard deviation manually to prevent needing hefty numpy dependencies in the container
         mean_length = sum(sentence_lengths) / len(sentence_lengths)
         variance = sum((x - mean_length) ** 2 for x in sentence_lengths) / len(sentence_lengths)
-        pacing_standard_dev = math.sqrt(variance)
-    else:
-        pacing_standard_dev = 0.0
+        pacing_range = round(math.sqrt(variance), 2)
 
     return {
-        "anti_patterns_removed": violations_removed,
-        "suppression_efficiency_pct": round(suppression_rate, 1),
+        "suppression_efficiency_pct": round(suppression_efficiency, 1),
         "dialogue_diversity_pct": round(dialogue_diversity, 1),
-        "lexical_echo_phrases": duplicate_echoes,
-        "pacing_dynamic_range": round(pacing_standard_dev, 2),
-        "word_count_delta": len(final_words) - len(draft_words)
+        "lexical_echo_phrases": echo_count,
+        "pacing_dynamic_range": pacing_range
     }
     
