@@ -1,452 +1,304 @@
-# app.py
+# app.py - Main Application Core & Event Routing Matrix
 import os
-import shutil
-import sqlite3
-import asyncio  # ⏱️ Non-blocking async UI engine
-import requests # 🌐 Network pinger for live token checking
-import gradio as gr
-import pandas as pd
+import inspect
 import json
-
-# 🔌 Import the backend logic
-import engine
+import traceback
+import gradio as gr
+import engine  
 import localization  
+from urllib.parse import urlparse
 
-# 🛡️ INTEGRATED SECURITY GUARDS
-from guard_limiter import check_upload_limit, RateLimitExceededError
-from guard_validator import validate_file_spec
-from guard_quarantine import inspect_binary_header
+from ui_styles import CUSTOM_CSS
+from ui_handlers import (
+    execute_gate_login, 
+    process_secure_upload,
+    async_compilation_handler,
+    generate_cover_art,
+    trigger_vault_refresh,
+    load_historical_file_to_studio
+)
 
-# 🧠 INTERNAL BRAIN WORKSPACE
-from rag_processor import SessionRAGManager
+from graph_ui_handlers import (
+    load_initial_graph,
+    generate_visjs_graph,
+    get_entity_choices,
+    inspect_entity_profile,
+    run_ai_timeline_compression,
+    populate_continuum_checkboxes,
+    run_manual_timeline_compression,
+    bootstrap_legacy_story
+)
 
-# ☁️ Hugging Face API Integration
-from huggingface_hub import HfApi
+import studio_tab
+import graphify_tab
+import vault_tab
+import sandbox_tab
+import archival_tab
 
-api = HfApi()
-HF_TOKEN = os.environ.get("HF_TOKEN")
-
-# Initialize synchronization frames and frameworks
-engine.download_history_from_hub()
 engine.init_db()
-rag_engine = SessionRAGManager()
-
-VAULTS = {
-    ".png": "Narrative-engine-labs/stratagem-vault",
-    ".jpg": "Narrative-engine-labs/stratagem-vault-jpg",
-    ".jpeg": "Narrative-engine-labs/stratagem-vault-jpg",
-    ".pdf": "Narrative-engine-labs/stratagem-vault-pdf",
-    ".docx": "Narrative-engine-labs/stratagem-vault-docs",
-    ".doc": "Narrative-engine-labs/stratagem-vault-docs",
-    ".txt": "Narrative-engine-labs/stratagem-vault-text",
-    ".md": "Narrative-engine-labs/stratagem-vault-text"
-}
-
-# 🔍 REAL-TIME EVENT-DRIVEN TOKEN CHECKER
-def verify_gemini_token_status(api_token):
-    if not api_token or len(api_token.strip()) < 10:
-        return "txt", "⚪ **Status:** Missing token string. Staging window is currently idle."
-        
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_token}"
-        response = requests.get(url, timeout=5)
-        
-        if response.status_code == 200:
-            return "🟢 **Status: Active & Ready** | Key signature validated. Quota headroom functional."
-        elif response.status_code == 429:
-            return "🟡 **Status: Exhausted / Rate-Limited** | Resource threshold pacing throttled (429)."
-        elif response.status_code in [400, 403]:
-            return "🔴 **Status: Invalid Key Configuration** | Authentication rejected by cluster."
-        else:
-            return f"orange", f"硬 **Status: Code {response.status_code}** | Context indicator check failure."
-    except requests.exceptions.RequestException:
-        return "❌ **Status: Network Timeout** | Local network failed to handshake with validation cluster."
-
-def get_vault_dataframe(request: gr.Request):
-    if not request or not request.username:
-        return pd.DataFrame(columns=["File Name", "Compiled Timestamp", "Blueprint Snippet", "Size"])
-    
-    conn = sqlite3.connect(engine.DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, timestamp, blueprint, manuscript FROM narrative_logs WHERE username = ? ORDER BY id DESC", (request.username,))
-    rows = c.fetchall()
-    conn.close()
-    
-    data = []
-    for row in rows:
-        log_id, timestamp, blueprint, manuscript = row
-        clean_timestamp = timestamp.replace("-", "").replace(" ", "_").replace(":", "")
-        file_name = f"artifact_{clean_timestamp}_{log_id}.txt"
-        file_size = f"{round(len(manuscript.encode('utf-8')) / 1024, 2)} KB"
-        
-        data.append({
-            "File Name": f"📄 {file_name}",
-            "Compiled Timestamp": timestamp,
-            "Blueprint Snippet": f"{blueprint[:40]}...",
-            "Size": file_size
-        })
-        
-    if not data:
-        return pd.DataFrame([{"System Status": "No archived workspace containers detected in cloud vault."}])
-        
-    return pd.DataFrame(data)
-
-def process_secure_upload(uploaded_file, request: gr.Request):
-    if uploaded_file is None:
-        return "No temporary file allocation detected."
-        
-    user_token = request.username if (request and request.username) else "anonymous_node"
-    temp_file_path = uploaded_file.name 
-    base_name = os.path.basename(temp_file_path)
-    _, ext = os.path.splitext(base_name.lower())
-    
-    try:
-        check_upload_limit(user_token, max_uploads=5, window_seconds=60)
-        validate_file_spec(temp_file_path, max_mb=5.0)
-        inspect_binary_header(temp_file_path)
-        
-        target_repo = VAULTS.get(ext, "Narrative-engine-labs/stratagem-vault-text")
-        
-        if not HF_TOKEN:
-            raise gr.Error("Backend Configuration Error: Cloud credentials missing.")
-            
-        api.upload_file(
-            path_or_fileobj=temp_file_path,
-            path_in_repo=f"uploads/{base_name}",
-            repo_id=target_repo,
-            repo_type="dataset",
-            token=HF_TOKEN
-        )
-        
-        storage_dir = "./storage/user_assets"
-        os.makedirs(storage_dir, exist_ok=True)
-        final_destination = os.path.join(storage_dir, base_name)
-        shutil.copy(temp_file_path, final_destination)
-        
-        _, rag_log = rag_engine.ingest_user_asset(user_token, final_destination)
-        
-        if hasattr(engine, 'register_attachment_in_db'):
-            engine.register_attachment_in_db(user_token, final_destination)
-            
-        return f"✨ Asset verified, indexed to RAG, & deployed to pool: {target_repo.split('/')[-1]}/{base_name}"
-        
-    except RateLimitExceededError as e:
-        raise gr.Error(str(e))
-    except ValueError as e:
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-        raise gr.Error(f"Security Defusal: {str(e)}")
-    except Exception as e:
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-        raise gr.Error(f"System Exception: Cloud cluster upload failed.")
-
-# ⏱️ ASYNC HANDLER INTERACTIVELY PACKS DASHBOARD KPIs
-async def async_compilation_handler(api_token, outline, bundle_name, request: gr.Progress, progress=gr.Progress()):
-    if not api_token:
-        return "⚠️ UI Safeguard Check: Please provide your Gemini Developer Token before executing.", "Unknown", 0, 0, 0, 0, "No data profile logged."
-    if not outline or len(outline.strip()) < 5:
-        return "⚠️ UI Safeguard Check: Structure blueprint field is empty or insufficient.", "Unknown", 0, 0, 0, 0, "No data profile logged."
-
-    progress(0, desc="⚡ Connecting to Stratagem compilation hub...")
-    await asyncio.sleep(0.2)
-    
-    user_token = request.username if (request and request.username) else "anonymous_node"
-    injected_context, rag_telemetry = rag_engine.retrieve_user_context(user_token, outline, top_k=3)
-    
-    compilation_prompt = outline
-    if injected_context:
-        compilation_prompt = f"{injected_context}\n\n⚡ [SYSTEM COMPILATION BLUEPRINT]\n{outline}"
-    
-    progress(0.40, desc=f"🤖 Booting isolated workspace nodes via {bundle_name}...")
-    
-    try:
-        if asyncio.iscoroutinefunction(engine.generate_story):
-            manuscript_text, structured_stats = await engine.generate_story(api_token, compilation_prompt, bundle_name, request)
-        else:
-            manuscript_text, structured_stats = await asyncio.to_thread(engine.generate_story, api_token, compilation_prompt, bundle_name, request)
-            
-        progress(0.90, desc="📊 Mapping output telemetry metrics into layout interface view...")
-        
-        # Pull safe data frames out of structured dictionary output
-        tier = structured_stats.get("tier", "Standard Quota")
-        efficiency = float(structured_stats.get("suppression_efficiency_pct", 0))
-        diversity = float(structured_stats.get("dialogue_diversity_pct", 0))
-        echoes = int(structured_stats.get("lexical_echo_phrases", 0))
-        pacing = float(structured_stats.get("pacing_dynamic_range", 0))
-        
-        progress(1.0, desc="✨ Scene compiled successfully via bundle strategy!")
-        return manuscript_text, tier, efficiency, diversity, echoes, pacing, rag_telemetry
-        
-    except Exception as e:
-        progress(1.0, desc="❌ Operational anomaly detected.")
-        return f"System Engine Exception: Handling thread failed. Details: {str(e)}", "Error", 0, 0, 0, 0, "Error compiling telemetry diagnostics."
 
 # ==========================================
-# 💎 PREMIUM OBSIDIAN CSS THEME STUDIO
+# 🔐 SUPABASE CLOUD AUTHENTICATION CONFIG
 # ==========================================
-CUSTOM_CSS = """
-body, .gradio-container {
-    background: radial-gradient(circle at top center, #0f111a 0%, #050608 100%) !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-    color: #f1f5f9 !important;
-}
-.gradio-container {
-    max-width: 1400px !important;
-    margin: 20px auto !important;
-    padding: 24px !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 16px !important;
-    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8) !important;
-}
-.header-container {
-    border-bottom: 1px solid #1e293b !important;
-    padding-bottom: 20px !important;
-    margin-bottom: 24px !important;
-    background: transparent !important;
-}
-.brand-title h1 {
-    font-size: 2.2rem !important;
-    font-weight: 900 !important;
-    letter-spacing: -0.03em !important;
-    background: linear-gradient(135deg, #a78bfa 0%, #6366f1 50%, #38bdf8 100%) !important;
-    -webkit-background-clip: text !important;
-    -webkit-text-fill-color: transparent !important;
-}
-.tabs-navigation {
-    border-bottom: 1px solid #1e293b !important;
-    margin-bottom: 20px !important;
-}
-button.tab-nav {
-    font-weight: 600 !important;
-    font-size: 0.95rem !important;
-    color: #64748b !important;
-    padding: 10px 16px !important;
-    transition: all 0.2s ease !important;
-}
-button.tab-nav.selected {
-    color: #a78bfa !important;
-    border-bottom: 2px solid #a78bfa !important;
-    background: transparent !important;
-}
-.workspace-card {
-    background: #090d16 !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 12px !important;
-    padding: 24px !important;
-}
-textarea, input[type="text"], input[type="password"], .gr-dropdown {
-    background: #04060a !important;
-    border: 1px solid #1e293b !important;
-    color: #f1f5f9 !important;
-    border-radius: 8px !important;
-}
-textarea:focus, input:focus {
-    border-color: #6366f1 !important;
-}
-.manuscript-canvas textarea {
-    font-family: "Georgia", serif !important;
-    font-size: 1.1rem !important;
-    line-height: 1.8 !important;
-    background: #0b0f19 !important;
-    padding: 24px !important;
-}
-.action-btn {
-    background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%) !important;
-    border: none !important;
-    color: white !important;
-    font-weight: 700 !important;
-    border-radius: 8px !important;
-    cursor: pointer !important;
-    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3) !important;
-}
-.action-btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 8px 20px rgba(99, 102, 241, 0.5) !important;
-}
-.secondary-btn {
-    background: #1e293b !important;
-    border: 1px solid #334155 !important;
-    color: #cbd5e1 !important;
-}
-.secondary-btn:hover {
-    background: #334155 !important;
-}
-.status-badge {
-    background: #04060a !important;
-    border: 1px solid #1e293b !important;
-    padding: 10px 14px !important;
-    border-radius: 6px !important;
-    font-size: 0.88rem !important;
-    display: block;
-}
-.kpi-container {
-    background: #04060a !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 8px !important;
-    padding: 12px !important;
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+
+def get_supabase_client():
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise ValueError("Missing cloud database cluster credentials (SUPABASE_URL / SUPABASE_ANON_KEY)")
+    from supabase import create_client
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+# ==========================================
+# 📱 MOBILE RESPONSIVE CSS
+# ==========================================
+MOBILE_RESPONSIVE_CSS = """
+@media (max-width: 768px) {
+    .gradio-container { max-width: 100% !important; padding: 8px !important; }
+    .workspace-card.landing-container { padding: 16px !important; margin: 5px !important; width: 100% !important; }
+    .mobile-input { width: 100% !important; }
+    .dynamic-btn { width: 100% !important; font-size: 13px !important; padding: 12px !important; }
+    .tabs-navigation > div:first-child, .tabs-navigation .tab-nav { flex-direction: column !important; }
+    .tabs-navigation button, .tab-nav button { width: 100% !important; text-align: left !important; padding: 12px 16px !important; }
 }
 """
 
-# ==========================================
-# 🧱 INTERACTIVE DASHBOARD VIEW BUILDER
-# ==========================================
-with gr.Blocks(css=CUSTOM_CSS) as demo:
-    
-    with gr.Group(elem_classes="header-container"):
-        gr.Markdown("# 🤖 CORE STRATAGEM WORKSPACE", elem_classes="brand-title")
-        gr.Markdown("Enterprise-grade agentic manuscript compiler featuring decentralized history sync mechanics and zero-DB security parameters.")
-    
-    with gr.Tabs(elem_classes="tabs-navigation"):
-        
-        # TAB 1: INTERACTIVE COMPILER WORKSPACE
-        with gr.Tab("🚀 Interactive AI Studio"):
-            with gr.Row():
-                with gr.Column(scale=4, elem_classes="workspace-card"):
-                    gr.Markdown("### 🛠️ Operation Inputs")
-                    
-                    api_input = gr.Textbox(
-                        label="🔑 Gemini Developer Token", 
-                        placeholder="Paste authorization token configuration here...", 
-                        type="password"
-                    )
-                    
-                    key_status_box = gr.Markdown("臨 **Status:** Staging window is currently idle.", elem_classes="status-badge")
-                    
-                    bundle_dropdown = gr.Dropdown(
-                        choices=list(engine.MODEL_BUNDLES.keys()),
-                        value=list(engine.MODEL_BUNDLES.keys())[1], 
-                        label="📦 Select AI Engine Deployment Bundle"
-                    )
-                    
-                    outline_input = gr.Textbox(
-                        label="📝 Structure Blueprint / Prompts", 
-                        placeholder="Map structural constraints, story beats, outline components...", 
-                        lines=10
-                    )
-                    
-                    file_uploader = gr.File(
-                        label="📎 Attach Lore Map / Plot Binder (Max 5MB)",
-                        file_types=[".png", ".jpg", ".jpeg", ".pdf", ".docx", ".doc", ".txt", ".md"],
-                        file_count="single"
-                    )
-                    upload_status = gr.Textbox(
-                        label="Asset Verification Status", 
-                        placeholder="No external files staged in repository sandbox.", 
-                        interactive=False
-                    )
-                    
-                    language_dropdown = gr.Dropdown(
-                        choices=list(localization.TARGET_LANGUAGES.keys()),
-                        value="Japanese (日本語)",
-                        label="Global Translation Target Language"
-                    )
-                    translate_btn = gr.Button("🌐 EXECUTE REGIONAL TRANSLATION", elem_classes="action-btn secondary-btn")
-                    
-                    submit_btn = gr.Button("⚡ RUN COMPILATION QUEUE", variant="primary", elem_classes="action-btn")
-                    
-                with gr.Column(scale=6, elem_classes="workspace-card"):
-                    gr.Markdown("### 📜 Output Console")
-                    output_text = gr.Textbox(
-                        label="Latest Compiled Manuscript", 
-                        placeholder="System idle. Awaiting compilation pass execution...", 
-                        lines=14,
-                        elem_classes="manuscript-canvas"
-                    )
-                    
-                    # 🛰️ INTERACTIVE LIVE KPI METRICS PANEL
-                    gr.Markdown("### 🛰️ Layer 4 Narrative Telemetry Analytics Dashboard")
-                    with gr.Group(elem_classes="kpi-container"):
-                        with gr.Row():
-                            ui_tier_badge = gr.Textbox(label="🏷️ Active Quota Footprint Tier", value="N/A", interactive=False)
-                            ui_echo_badge = gr.Number(label="🔄 Lexical Echo Phrases Caught", value=0, interactive=False)
-                        with gr.Row():
-                            ui_efficiency_slider = gr.Slider(label="📈 Forbidden Phrase Suppression Efficiency", minimum=0, maximum=100, value=0, interactive=False)
-                            ui_diversity_slider = gr.Slider(label="🎭 Dialogue Diversity Score", minimum=0, maximum=100, value=0, interactive=False)
-                        with gr.Row():
-                            ui_pacing_badge = gr.Number(label="⏳ Pacing Dynamic Range (Sentence StdDev Words)", value=0, interactive=False)
-                        
-                        ui_rag_telemetry = gr.Textbox(label="🧠 Active Knowledge Retrieval Vector Logs", placeholder="No asset data pulled into current execution stack.", lines=3, interactive=False)
-        
-        # TAB 2: ADVANCED SECURE VAULT EXPLORER
-        with gr.Tab("📁 Vault File Explorer"):
-            with gr.Column(elem_classes="workspace-card"):
-                gr.Markdown("### 🗄️ Private Cloud Storage Cloud Handshake")
-                gr.Markdown("Browse all persistent narrative artifacts safely stored as an indexed ledger inside your private database container.")
-                
-                with gr.Row():
-                    refresh_vault_btn = gr.Button("🔄 Scan Repository Storage", elem_classes="action-btn secondary-btn", scale=2)
-                    history_dropdown = gr.Dropdown(label="Select File Anchor to Mount Content", choices=[], interactive=True, scale=8)
-                
-                vault_grid = gr.Dataframe(
-                    headers=["File Name", "Compiled Timestamp", "Blueprint Snippet", "Size"],
-                    datatype=["str", "str", "str", "str"],
-                    row_count=5,
-                    interactive=False,
-                    label="Repository Index Manifest"
-                )
+FINAL_CSS_MANIFEST = CUSTOM_CSS + "\n" + MOBILE_RESPONSIVE_CSS
 
-    # ==========================================
-    # 🎛️ AUTOMATED EVENT HANDLERS & LINKAGES
-    # ==========================================
-    
-    # ⚡ AUTOMATION HOOKS: Auto-runs verification on paste (.change) or exit (.blur)
-    api_input.change(fn=verify_gemini_token_status, inputs=[api_input], outputs=[key_status_box])
-    api_input.blur(fn=verify_gemini_token_status, inputs=[api_input], outputs=[key_status_box])
-    
-    # Connect compile buttons to unpack results interactively across components
-    submit_btn.click(
-        fn=async_compilation_handler, 
-        inputs=[api_input, outline_input, bundle_dropdown], 
-        outputs=[output_text, ui_tier_badge, ui_efficiency_slider, ui_diversity_slider, ui_echo_badge, ui_pacing_badge, ui_rag_telemetry],  
-        show_progress="full"
-    )
-    
-    translate_btn.click(
-        fn=localization.translate_manuscript,
-        inputs=[output_text, language_dropdown, api_input],
-        outputs=[output_text]
-    )
-    
-    file_uploader.upload(
-        fn=process_secure_upload,
-        inputs=[file_uploader],
-        outputs=upload_status
-    )
-    
-    def trigger_vault_refresh(request: gr.Request):
-        dropdown_update = engine.fetch_user_history_choices(request)
-        dataframe_update = get_vault_dataframe(request)
-        return dropdown_update, dataframe_update
+def wrap_html_in_iframe(html_content):
+    if not html_content: return ""
+    escaped_html = html_content.replace('"', '&quot;')
+    return f'<iframe srcdoc="{escaped_html}" width="100%" height="650px" style="border: none; border-radius: 8px; background: transparent;"></iframe>'
+
+# ==========================================
+# 🔄 AGGRESSIVE DIAGNOSTIC OAUTH INTERCEPTOR
+# ==========================================
+OAUTH_JS_INTERCEPTOR = """
+function(current_val) {
+    try {
+        let hash = window.location.hash;
+        if (!hash) {
+            try { hash = window.parent.location.hash; } catch(e) {}
+        }
         
-    refresh_vault_btn.click(fn=trigger_vault_refresh, inputs=[], outputs=[history_dropdown, vault_grid])
-    
-    # 📂 INTERACTIVE WORKSPACE INGESTION PIPELINE FOR HISTORY SELECTOR
-    def load_historical_file_to_studio(log_id):
-        blueprint, manuscript, stats_summary, structured_data = engine.restore_archived_session(log_id)
+        if (hash && hash.includes("access_token")) {
+            let urlParams = new URLSearchParams(hash.substring(1));
+            let access = urlParams.get("access_token");
+            let refresh = urlParams.get("refresh_token");
+            
+            if (access && refresh) {
+                let payload = JSON.stringify({ access_token: access, refresh_token: refresh });
+                localStorage.setItem("stratagem_auth_cache", payload);
+                window.history.replaceState({}, document.title, window.location.pathname);
+                return payload;
+            }
+        }
         
-        # Pull values out to mount to dashboard dynamically
+        let stored = localStorage.getItem("stratagem_auth_cache");
+        return stored ? stored : "";
+    } catch (e) {
+        return "JS_ERROR: " + e.message;
+    }
+}
+"""
+
+def handle_automated_page_load(session_json):
+    """Intercepts, decodes, and brutally logs every failure point during load."""
+    if not session_json or not isinstance(session_json, str) or session_json.strip() == "":
+        return gr.update(visible=True), gr.update(visible=False), "anonymous", "", gr.update(), gr.update(value="")
+        
+    if session_json.startswith("JS_ERROR:"):
+        return gr.update(visible=True), gr.update(visible=False), "anonymous", "", gr.update(), f"<div style='padding:12px; background:#ffebee; color:#c62828; border-radius:6px; border:1px solid #ffcdd2;'><b>⚠️ Browser Security Block:</b><br>{session_json}</div>"
+        
+    try:
+        # STEP 1: Payload Decoding
+        try:
+            token_data = json.loads(session_json)
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token")
+        except Exception as e:
+            return gr.update(visible=True), gr.update(visible=False), "anonymous", "", gr.update(), f"<div style='padding:12px; background:#ffebee; color:#c62828; border-radius:6px; border:1px solid #ffcdd2;'><b>⚠️ JSON Parsing Failed:</b><br>{str(e)}</div>"
+
+        if not access_token or not refresh_token:
+            return gr.update(visible=True), gr.update(visible=False), "anonymous", "", gr.update(), "<div style='padding:12px; background:#ffebee; color:#c62828; border-radius:6px; border:1px solid #ffcdd2;'><b>⚠️ Token Incomplete:</b> Storage cache contains broken token data.</div>"
+
+        # STEP 2: Supabase Authorization Test
+        try:
+            supabase = get_supabase_client()
+            supabase.auth.set_session(access_token=access_token, refresh_token=refresh_token)
+            user_response = supabase.auth.get_user()
+        except Exception as e:
+            return gr.update(visible=True), gr.update(visible=False), "anonymous", "", gr.update(), f"<div style='padding:12px; background:#ffebee; color:#c62828; border-radius:6px; border:1px solid #ffcdd2;'><b>⚠️ Supabase Rejected Session:</b><br>{str(e)}<br><small>Your login may have expired, or your Supabase URL/Anon Key is misconfigured.</small></div>"
+
+        if not user_response or not hasattr(user_response, 'user') or not user_response.user:
+            return gr.update(visible=True), gr.update(visible=False), "anonymous", "", gr.update(), "<div style='padding:12px; background:#ffebee; color:#c62828; border-radius:6px; border:1px solid #ffcdd2;'><b>⚠️ User Not Found:</b> Identity verified, but no user data returned.</div>"
+
+        verified_user_identity = user_response.user.email
+
+        # STEP 3: Graph Generation (Isolating the Silent Crasher)
+        try:
+            html, dropdown_choices = load_initial_graph(verified_user_identity)
+            iframe_html = wrap_html_in_iframe(html)
+        except Exception as e:
+            print(f"Graph rendering crash: {e}")
+            # If the graph breaks, we login anyway and show the error!
+            iframe_html = f"<div style='padding:20px; background:#fff3e0; color:#e65100; border-radius:8px;'>⚠️ <b>Workspace Graph Failed to Load:</b><br>{str(e)}<br><br><small><i>Your login was successful, but the graph database encountered an error.</i></small></div>"
+            dropdown_choices = []
+
+        # STEP 4: Successful Workspace Boot
         return (
-            blueprint, 
-            manuscript, 
-            structured_data.get("tier", "Historical Workspace Archive"),
-            float(structured_data.get("suppression_efficiency_pct", 0)),
-            float(structured_data.get("dialogue_diversity_pct", 0)),
-            int(structured_data.get("lexical_echo_phrases", 0)),
-            float(structured_data.get("pacing_dynamic_range", 0)),
-            "Loaded historical log sequence. System operational context successfully mounted."
+            gr.update(visible=False), 
+            gr.update(visible=True), 
+            verified_user_identity, 
+            iframe_html, 
+            gr.update(choices=dropdown_choices),
+            gr.update(value="")
+        )
+
+    except Exception as critical_error:
+        error_trace = traceback.format_exc()
+        print(f"Critical System Failure: {error_trace}")
+        return gr.update(visible=True), gr.update(visible=False), "anonymous", "", gr.update(), f"<div style='padding:12px; background:#ffebee; color:#c62828; border-radius:6px; border:1px solid #ffcdd2;'><b>⚠️ System Failure:</b><br>{str(critical_error)}</div>"
+
+# ==========================================
+# 🧱 APP INTERFACE CONSTRUCTOR
+# ==========================================
+with gr.Blocks() as demo:
+    session_user = gr.State("anonymous")
+    oauth_token_bridge = gr.Textbox(visible=False)
+    
+    with gr.Column(visible=True, elem_classes="workspace-card landing-container") as landing_gate:
+        gr.Markdown("## 🤖 STRATAGEM WORKSPACE BETA")
+        gr.Markdown(
+            """
+            ### 🎁 EARLY-BIRD FOUNDER STATUS (BETA)
+            Thank you for helping us test the workspace! By using this app during our official **Beta Phase**, you are automatically locked in as a founding user. 
+            
+            **Your Benefit:** You will receive **1 Year of Premium Subscription completely FREE** on the day of our official public launch.
+            """
         )
         
-    history_dropdown.change(
-        fn=load_historical_file_to_studio, 
-        inputs=[history_dropdown], 
-        outputs=[outline_input, output_text, ui_tier_badge, ui_efficiency_slider, ui_diversity_slider, ui_echo_badge, ui_pacing_badge, ui_rag_telemetry]  
+        status_notification = gr.HTML("")
+        
+        with gr.Group():
+            github_auth_trigger = gr.Button("Sign in with GitHub", variant="secondary", elem_classes="action-btn dynamic-btn")
+            github_link_display = gr.HTML(visible=False)
+            
+        gr.Markdown("<p style='text-align: center; color: #777; margin: 15px 0;'>— OR USE YOUR EMAIL —</p>")
+        email_field = gr.Textbox(label="Email Address", placeholder="name@example.com", lines=1, elem_classes="mobile-input")
+        password_field = gr.Textbox(label="Password", placeholder="••••••••", type="password", lines=1, elem_classes="mobile-input")
+        submit_gate_btn = gr.Button("Sign In", variant="primary", elem_classes="action-btn dynamic-btn")
+
+    with gr.Column(visible=False) as main_workspace:
+        with gr.Group(elem_classes="header-container"):
+            gr.Markdown("# 🤖 CORE STRATAGEM WORKSPACE", elem_classes="brand-title")
+            user_counter_display = gr.Markdown("📊 Counting active nodes...")
+        
+        with gr.Tabs(elem_classes="tabs-navigation"):
+            with gr.Tab("🚀 Interactive AI Studio"):
+                st = studio_tab.render_studio_tab()
+            with gr.Tab("🛰️ Graphify Interactive Map"):
+                gt = graphify_tab.render_graphify_tab()
+            with gr.Tab("📁 Vault File Explorer"):
+                vt = vault_tab.render_vault_tab()
+            with gr.Tab("🎨 Illustration Sandbox"):
+                sb = sandbox_tab.render_sandbox_tab()
+            with gr.Tab("🛰️ Graphify Memory Archival"):
+                at = archival_tab.render_archival_tab()
+
+    # 🛡️ SAFE INTERCEPT WRAPPERS
+    def safe_identify_key_handler(api_key):
+        try: return engine.identify_key_and_filter_bundles(api_key)
+        except Exception as e: return gr.update(choices=["Error validating bundle setup"], value="Error validating bundle setup"), f"❌ **Key Token Error:** {str(e)}"
+
+    async def safe_async_compilation_handler(*args):
+        try:
+            if inspect.iscoroutinefunction(async_compilation_handler): return await async_compilation_handler(*args)
+            return async_compilation_handler(*args)
+        except Exception as e: return f"❌ COMPILATION CRASH: {str(e)}", "OFFLINE_TIER", 0, 0, 0, 0, f"Diagnostic Logs:\n{str(e)}"
+
+    async def safe_bootstrap_legacy_handler(*args):
+        try:
+            if inspect.iscoroutinefunction(bootstrap_legacy_story): return await bootstrap_legacy_story(*args)
+            return bootstrap_legacy_story(*args)
+        except Exception as e: return f"❌ Legacy Extraction Agent Failure: {str(e)}"
+
+    def safe_translate_manuscript_handler(text, lang, key):
+        try: return localization.translate_manuscript(text, lang, key)
+        except Exception as e: return f"❌ Translation Engine Blocked: {str(e)}\n\n[Original Source Text]:\n{text}"
+        
+    def safe_load_initial_graph_wrapper(user):
+        try:
+            html, choices = load_initial_graph(user)
+            return wrap_html_in_iframe(html), choices
+        except Exception as e:
+            return f"<p style='color:red'>Graph Gen Error: {e}</p>", []
+
+    def safe_refresh_visualization_wrapper(user, search, f_type):
+        try:
+            html = generate_visjs_graph(user, search, f_type)
+            choices = get_entity_choices(user)
+            return wrap_html_in_iframe(html), choices
+        except Exception as e:
+            return f"<p style='color:red'>Refresh Error: {e}</p>", []
+
+    # 🎛️ EVENT HANDLERS & WIRE ROUTING
+    def generate_github_oauth_handshake(request: gr.Request):
+        try:
+            supabase = get_supabase_client()
+            res = supabase.auth.sign_in_with_oauth({"provider": "github"})
+            authentic_button_html = f"""
+            <div style="display: flex; justify-content: center; width: 100%; margin: 12px 0;">
+                <a href="{res.url}" target="_top" style="display: inline-flex; align-items: center; justify-content: center; background-color: #24292e; color: #ffffff; text-decoration: none; font-family: sans-serif; font-size: 15px; font-weight: 600; padding: 12px 24px; border-radius: 6px; width: 100%; max-width: 340px; text-align: center;">
+                    Sign in with GitHub Redirect
+                </a>
+            </div>
+            """
+            return gr.update(value=authentic_button_html, visible=True)
+        except Exception as e: return gr.update(value=f"<p style='color: red;'>❌ OAuth Failure: {str(e)}</p>", visible=True)
+
+    github_auth_trigger.click(fn=generate_github_oauth_handshake, inputs=None, outputs=[github_link_display])
+    
+    submit_gate_btn.click(
+        fn=execute_gate_login, inputs=[email_field, password_field], outputs=[landing_gate, main_workspace, st["key_status_box"], user_counter_display, session_user]
+    ).then(fn=safe_load_initial_graph_wrapper, inputs=[session_user], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    
+    st["api_input"].change(fn=safe_identify_key_handler, inputs=[st["api_input"]], outputs=[st["bundle_dropdown"], st["key_status_box"]])
+    st["api_input"].blur(fn=safe_identify_key_handler, inputs=[st["api_input"]], outputs=[st["bundle_dropdown"], st["key_status_box"]])
+    
+    st["submit_btn"].click(
+        fn=safe_async_compilation_handler, 
+        inputs=[st["api_input"], st["outline_input"], st["bundle_dropdown"], st["pinned_entities"], st["genre_input"], st["ui_pacing_mode"], st["ui_prose_density"], st["ui_dialogue_intensity"], st["ui_description_level"], st["ui_world_visibility"], st["ui_emotional_opacity"], session_user], 
+        outputs=[st["output_text"], st["ui_tier_badge"], st["ui_efficiency_slider"], st["ui_diversity_slider"], st["ui_echo_badge"], st["ui_pacing_badge"], st["ui_rag_telemetry"]],  
+        show_progress="full"
+    ).then(fn=safe_load_initial_graph_wrapper, inputs=[session_user], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    
+    st["bootstrap_btn"].click(fn=safe_bootstrap_legacy_handler, inputs=[session_user, st["api_input"], st["bundle_dropdown"], st["legacy_draft_box"]], outputs=[st["bootstrap_status"]]).then(fn=safe_load_initial_graph_wrapper, inputs=[session_user], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    
+    gt["refresh_graph_btn"].click(fn=safe_refresh_visualization_wrapper, inputs=[session_user, gt["search_box"], gt["type_filter"]], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    gt["search_box"].change(fn=safe_refresh_visualization_wrapper, inputs=[session_user, gt["search_box"], gt["type_filter"]], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    gt["type_filter"].change(fn=safe_refresh_visualization_wrapper, inputs=[session_user, gt["search_box"], gt["type_filter"]], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    gt["inspect_dropdown"].change(fn=inspect_entity_profile, inputs=[session_user, gt["inspect_dropdown"]], outputs=[gt["inspector_panel_md"]])
+    
+    at["ai_compress_btn"].click(fn=run_ai_timeline_compression, inputs=[session_user, st["api_input"], st["bundle_dropdown"]], outputs=[at["operation_log_output"]]).then(fn=safe_load_initial_graph_wrapper, inputs=[session_user], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    at["scan_timeline_btn"].click(fn=populate_continuum_checkboxes, inputs=[session_user], outputs=[at["preservation_checkboxes"]])
+    at["manual_compress_btn"].click(fn=run_manual_timeline_compression, inputs=[session_user, at["preservation_checkboxes"]], outputs=[at["operation_log_output"]]).then(fn=safe_load_initial_graph_wrapper, inputs=[session_user], outputs=[gt["graph_html_output"], gt["inspect_dropdown"]])
+    
+    st["translate_btn"].click(fn=safe_translate_manuscript_handler, inputs=[st["output_text"], st["language_dropdown"], st["api_input"]], outputs=[st["output_text"]])
+    st["file_uploader"].upload(fn=process_secure_upload, inputs=[st["file_uploader"], session_user], outputs=st["upload_status"])
+    sb["generate_art_btn"].click(fn=generate_cover_art, inputs=[sb["art_prompt"], sb["style_dropdown"]], outputs=[sb["gallery_output"]])
+    vt["refresh_vault_btn"].click(fn=trigger_vault_refresh, inputs=[session_user], outputs=[vt["history_dropdown"], vt["vault_grid"]])
+    
+    vt["history_dropdown"].change(fn=load_historical_file_to_studio, inputs=[vt["history_dropdown"]], outputs=[st["outline_input"], st["output_text"], st["ui_tier_badge"], st["ui_efficiency_slider"], st["ui_diversity_slider"], st["ui_echo_badge"], st["ui_pacing_badge"], st["ui_rag_telemetry"]])
+
+    # 🔗 THE ALARM SYSTEM
+    demo.load(
+        fn=handle_automated_page_load,
+        inputs=[oauth_token_bridge],
+        outputs=[landing_gate, main_workspace, session_user, gt["graph_html_output"], gt["inspect_dropdown"], status_notification],
+        js=OAUTH_JS_INTERCEPTOR
     )
 
 if __name__ == "__main__":
     demo.queue(default_concurrency_limit=10)
-    demo.launch(
-        auth=engine.verify_license_key, 
-        auth_message="Welcome to Stratagem Workspace. Provide access token configurations.",
-        css=CUSTOM_CSS
-)
+    demo.launch(server_name="0.0.0.0", server_port=7860, css=FINAL_CSS_MANIFEST)
