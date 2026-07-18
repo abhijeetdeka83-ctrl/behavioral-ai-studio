@@ -1,3 +1,8 @@
-gradio
 google-genai
+google-generativeai
 huggingface_hub
+openai
+anthropic
+pandas
+pillow
+supabase
